@@ -7,24 +7,52 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.combine
 
 class TaskViewModel(
     private val dao: TaskDao
 ) : ViewModel() {
+    // Texto que el usuario esta escribiendo en el campo
+// de busqueda. Cambia con cada tecla, pero NO dispara
+// la consulta a la base de datos.
+    private val _searchInput = MutableStateFlow("")
+    val searchInput: StateFlow<String> = _searchInput.asStateFlow()
+    // Texto con el que se esta filtrando efectivamente.
+// Solo cambia cuando el usuario pulsa el boton de buscar.
+    private val _activeQuery = MutableStateFlow("")
+    private val _sortOrder = MutableStateFlow(TaskSortOrder.NEWEST)
+    val sortOrder: StateFlow<TaskSortOrder> = _sortOrder.asStateFlow()
+
     // Exponemos la lista de tareas como StateFlow.
 // stateIn convierte el Flow del DAO en un StateFlow
 // que Compose puede observar fácilmente.
-    val tasks: StateFlow<List<TaskEntity>> = dao
-        .getAllTasks()
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val tasks: StateFlow<List<TaskEntity>> = _activeQuery
+        .flatMapLatest { query ->
+            dao.searchTasks(query)
+        }
+        .combine(_sortOrder) { tasks, sortOrder ->
+            when (sortOrder) {
+                TaskSortOrder.NEWEST -> tasks
+                TaskSortOrder.OLDEST -> tasks.reversed()
+                TaskSortOrder.TITLE_A_Z -> tasks.sortedBy { it.titulo.lowercase() }
+                TaskSortOrder.TITLE_Z_A -> tasks.sortedByDescending { it.titulo.lowercase() }
+            }
+        }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
             initialValue = emptyList()
         )
+
     fun addTask(title: String) {
 // Evitamos insertar tareas con titulo vacio.
         if (title.isBlank()) return
@@ -41,6 +69,22 @@ class TaskViewModel(
         viewModelScope.launch {
             dao.delete(task)
         }
+    }
+
+    fun onSearchInputChanged(text: String) {
+// Solo actualizamos lo que se ve en el campo.
+// La busqueda real NO se dispara aqui.
+        _searchInput.value = text
+    }
+    fun executeSearch() {
+// Aqui SI se dispara la consulta: copiamos el
+// texto del campo a _activeQuery, que es el que
+// observa el Flow de tasks.
+        _activeQuery.value = _searchInput.value.trim()
+    }
+
+    fun onSortOrderChanged(order: TaskSortOrder) {
+        _sortOrder.value = order
     }
     // ----- Factory -----
 // El companion object guarda una Factory que sabe
